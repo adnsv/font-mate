@@ -32,31 +32,6 @@ func (c *CompareCmd) Run(ctx *kong.Context) error {
 		fontNames[i] = fontName
 	}
 
-	// Collect all unique codepoints
-	allCodepointsSet := make(map[rune]struct{})
-	for _, coverage := range fontCoverages {
-		for cp := range coverage {
-			allCodepointsSet[cp] = struct{}{}
-		}
-	}
-
-	// Convert codepoint set to slice and sort
-	allCodepoints := make([]rune, 0, len(allCodepointsSet))
-	for cp := range allCodepointsSet {
-		allCodepoints = append(allCodepoints, cp)
-	}
-	sort.Slice(allCodepoints, func(i, j int) bool { return allCodepoints[i] < allCodepoints[j] })
-
-	// For each codepoint, record which fonts cover it
-	codepointCoverage := make(map[rune][]string)
-	for _, cp := range allCodepoints {
-		for fontName, coverage := range fontCoverages {
-			if _, exists := coverage[cp]; exists {
-				codepointCoverage[cp] = append(codepointCoverage[cp], fontName)
-			}
-		}
-	}
-
 	// Open output writer
 	writer, err := getWriter(c.Output)
 	if err != nil {
@@ -65,33 +40,94 @@ func (c *CompareCmd) Run(ctx *kong.Context) error {
 	defer closeWriter(writer)
 
 	// Generate report
-	printMultiComparisonReport(writer, fontNames, codepointCoverage)
+	printMultiComparisonReport(writer, fontNames, fontCoverages, 65536)
+
 	return nil
 }
 
+type RangeCoverageInfo struct {
+	Lo             rune
+	Hi             rune
+	Fonts          string
+	CodepointCount int
+}
+
 // printMultiComparisonReport prints the comparison report for multiple fonts.
-func printMultiComparisonReport(writer io.Writer, fontNames []string, codepointCoverage map[rune][]string) {
-	// Create a map from coverage (list of fonts) to codepoint ranges
+func printMultiComparisonReport(writer io.Writer, fontNames []string, fontCoverages map[string]map[rune]struct{}, maxGap int) {
+	// Define the struct for holding range information
+	type RangeCoverageInfo struct {
+		Lo             rune
+		Hi             rune
+		Fonts          string
+		CodepointCount int
+	}
+
+	// Map to hold coverage keys and their display strings
 	type CoverageKey string
-	coverageMap := make(map[CoverageKey][]rune)
+	coverageKeyMap := make(map[CoverageKey]string)
 
-	// For each codepoint, create a key representing the fonts that cover it
-	for cp, fonts := range codepointCoverage {
-		sort.Strings(fonts) // Ensure consistent order
-		key := CoverageKey(strings.Join(fonts, ", "))
-		coverageMap[key] = append(coverageMap[key], cp)
+	// Map each codepoint to its coverage key
+	codepointCoverage := make(map[rune]CoverageKey)
+
+	// Collect codepoints and their coverage keys
+	for cp := rune(0x0000); cp <= 0x10FFFF; cp++ {
+		var fonts []string
+		for fontName, coverage := range fontCoverages {
+			if _, exists := coverage[cp]; exists {
+				fonts = append(fonts, fontName)
+			}
+		}
+		if len(fonts) > 0 {
+			sort.Strings(fonts)
+			key := CoverageKey(strings.Join(fonts, ", "))
+			codepointCoverage[cp] = key
+			coverageKeyMap[key] = strings.Join(fonts, ", ")
+		}
 	}
 
-	// Now, for each coverage key, group codepoints into ranges
-	coverageRanges := make(map[CoverageKey][]Range)
+	// Sort codepoints
+	var codepoints []rune
+	for cp := range codepointCoverage {
+		codepoints = append(codepoints, cp)
+	}
+	sort.Slice(codepoints, func(i, j int) bool { return codepoints[i] < codepoints[j] })
 
-	for key, codepoints := range coverageMap {
-		sort.Slice(codepoints, func(i, j int) bool { return codepoints[i] < codepoints[j] })
-		ranges := groupCodepointsIntoRanges(codepoints)
-		coverageRanges[key] = ranges
+	// Create non-overlapping ranges, allowing gaps up to maxGap
+	var ranges []RangeCoverageInfo
+	if len(codepoints) > 0 {
+		startCP := codepoints[0]
+		prevCP := codepoints[0]
+		currentKey := codepointCoverage[startCP]
+
+		for i := 1; i < len(codepoints); i++ {
+			cp := codepoints[i]
+			key := codepointCoverage[cp]
+			if int(cp-prevCP) <= maxGap+1 && key == currentKey {
+				// Continue the current range
+				prevCP = cp
+			} else {
+				// Finish the current range and start a new one
+				ranges = append(ranges, RangeCoverageInfo{
+					Lo:             startCP,
+					Hi:             prevCP,
+					Fonts:          coverageKeyMap[currentKey],
+					CodepointCount: int(prevCP - startCP + 1),
+				})
+				startCP = cp
+				prevCP = cp
+				currentKey = key
+			}
+		}
+		// Add the last range
+		ranges = append(ranges, RangeCoverageInfo{
+			Lo:             startCP,
+			Hi:             prevCP,
+			Fonts:          coverageKeyMap[currentKey],
+			CodepointCount: int(prevCP - startCP + 1),
+		})
 	}
 
-	// Now, print the report
+	// Print the report
 	fmt.Fprintf(writer, "Comparison Report for Fonts:\n")
 	for _, fontName := range fontNames {
 		fmt.Fprintf(writer, "- %s\n", fontName)
@@ -101,11 +137,8 @@ func printMultiComparisonReport(writer io.Writer, fontNames []string, codepointC
 	fmt.Fprintf(writer, "%-20s %-40s %-10s\n", "Codepoint Range", "Fonts", "Codepoints")
 	fmt.Fprintf(writer, "%s\n", strings.Repeat("-", 80))
 
-	for key, ranges := range coverageRanges {
-		for _, r := range ranges {
-			codepointRange := fmt.Sprintf("U+%04X - U+%04X", r.Lo, r.Hi)
-			count := int(r.Hi - r.Lo + 1)
-			fmt.Fprintf(writer, "%-20s %-40s %d\n", codepointRange, key, count)
-		}
+	for _, rc := range ranges {
+		codepointRange := fmt.Sprintf("U+%04X - U+%04X", rc.Lo, rc.Hi)
+		fmt.Fprintf(writer, "%-20s %-40s %d\n", codepointRange, rc.Fonts, rc.CodepointCount)
 	}
 }

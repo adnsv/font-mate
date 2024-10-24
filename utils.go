@@ -49,7 +49,7 @@ func closeWriter(writer io.Writer) {
 }
 
 // groupCodepointsIntoRanges groups codepoints into continuous ranges.
-func groupCodepointsIntoRanges(codepoints []rune) []Range {
+func groupCodepointsIntoRanges(codepoints []rune, maxGap int) []Range {
 	if len(codepoints) == 0 {
 		return nil
 	}
@@ -60,8 +60,8 @@ func groupCodepointsIntoRanges(codepoints []rune) []Range {
 
 	for i := 1; i < len(codepoints); i++ {
 		cp := codepoints[i]
-		if cp == prev+1 {
-			// Extend the current range
+		if int(cp-prev) <= maxGap+1 {
+			// Extend the current range, including the gap
 			prev = cp
 		} else {
 			// End the current range and start a new one

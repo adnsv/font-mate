@@ -1,12 +1,12 @@
 import argparse
-import pkg_resources
+from importlib.metadata import version, PackageNotFoundError
 
 from impl import merge_fonts, coverage_analysis
 
 # Get version dynamically from setuptools_scm
 try:
-    VERSION = pkg_resources.get_distribution("font-mate").version
-except pkg_resources.DistributionNotFound:
+    VERSION = version("font-mate")
+except PackageNotFoundError:
     VERSION = "0.0.0"
 
 
@@ -66,6 +66,11 @@ def main():
         type=str,
         help="Path to the font file to analyze for Unicode coverage."
     )
+    coverage_parser.add_argument(
+      "-o", "--output",
+      type=str,
+      help="Path to save the coverage report. If not specified, the output will be printed to stdout."
+    )
 
     args = parser.parse_args()
 
@@ -78,7 +83,7 @@ def main():
             keep_all_ranges=args.keep_all_ranges
         )
     elif args.command == "coverage":
-        coverage_analysis(args.font)
+        coverage_analysis(args.font, output_file=args.output)
 
 
 if __name__ == "__main__":

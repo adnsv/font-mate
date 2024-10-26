@@ -28,4 +28,4 @@ pip-delete-this-directory.txt
 *.log
 
 .vscode/*
-testdata/*.ufo/
+testdata/*
